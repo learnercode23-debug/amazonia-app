@@ -28,6 +28,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
@@ -38,33 +41,43 @@ jobs:
         run: npx expo prebuild --platform android --clean
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          JAVA_HOME: ${{ env.JAVA_HOME }}
+
+      # ── CRITICAL: increase JVM heap AFTER prebuild creates gradle.properties ──
+      - name: Increase Gradle JVM memory
+        run: |
+          cat >> android/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.configureondemand=false
+          org.gradle.workers.max=2
+          EOF
+          echo "--- gradle.properties after update ---"
+          cat android/gradle.properties
 
       - name: Make Gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
-
       - name: Build Debug APK
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --max-workers 2
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m"
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g"
+          _JAVA_OPTIONS: "-Xmx6g"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Amazonia-App
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-      - name: Done
+      - name: Success
         run: |
           echo "========================================"
-          echo "  APK BUILT SUCCESSFULLY!"
+          echo "  APK BUILD COMPLETE!"
           ls -lh android/app/build/outputs/apk/debug/
           echo "========================================"
