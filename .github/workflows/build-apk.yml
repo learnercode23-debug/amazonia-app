@@ -37,32 +37,47 @@ jobs:
       - name: Install Expo CLI
         run: npm install -g @expo/cli
 
-      - name: Expo Prebuild
+      - name: Expo Prebuild (generate native Android project)
         run: npx expo prebuild --platform android --clean
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      # ── Fix Java heap space: disable Jetifier + max memory ──────────────────
-      - name: Fix Gradle memory and disable Jetifier
+      # ── Fix memory + bundle JS into APK (critical for standalone install) ──
+      - name: Configure Gradle and bundle JS
         run: |
-          # Remove existing jvmargs to avoid conflict
+          # Remove conflicting jvmargs first
           sed -i '/org.gradle.jvmargs/d' android/gradle.properties
 
+          # Add memory + disable Jetifier (fixes heap crash) + bundle debug
           cat >> android/gradle.properties << 'EOF'
-
-          # Memory fix
-          org.gradle.jvmargs=-Xmx7168m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
           org.gradle.daemon=false
           org.gradle.parallel=false
-          org.gradle.configureondemand=false
           org.gradle.workers.max=1
-
-          # Disable Jetifier — fixes JetifyTransform Java heap space crash
           android.enableJetifier=false
+          BUNDLE_IN_DEBUG=true
           EOF
 
-          echo "=== gradle.properties ==="
-          cat android/gradle.properties
+          # Create assets folder
+          mkdir -p android/app/src/main/assets
+
+          # Bundle JavaScript into the APK (required for standalone install)
+          echo "Bundling JavaScript..."
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file node_modules/expo-router/entry.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/ \
+            --reset-cache || \
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/
+
+          echo "Bundle size: $(du -sh android/app/src/main/assets/index.android.bundle)"
 
       - name: Make Gradlew executable
         run: chmod +x android/gradlew
@@ -70,15 +85,12 @@ jobs:
       - name: Build Debug APK
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon --max-workers 1 --info 2>&1 | tail -50
+          ./gradlew assembleDebug --no-daemon --max-workers 1
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx7168m -XX:MaxMetaspaceSize=1024m"
-          _JAVA_OPTIONS: "-Xmx7168m"
-
-      - name: Locate APK
-        run: find android/app/build/outputs -name "*.apk" 2>/dev/null || echo "No APK found"
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g"
+          _JAVA_OPTIONS: "-Xmx6g"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -91,5 +103,5 @@ jobs:
         run: |
           echo "========================================"
           echo "  APK BUILD COMPLETE!"
-          ls -lh android/app/build/outputs/apk/debug/ 2>/dev/null
+          ls -lh android/app/build/outputs/apk/debug/
           echo "========================================"
