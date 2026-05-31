@@ -37,71 +37,69 @@ jobs:
       - name: Install Expo CLI
         run: npm install -g @expo/cli
 
-      - name: Expo Prebuild (generate native Android project)
+      - name: Expo Prebuild
         run: npx expo prebuild --platform android --clean
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      # ── Fix memory + bundle JS into APK (critical for standalone install) ──
-      - name: Configure Gradle and bundle JS
+      - name: Fix Gradle memory + disable Jetifier
         run: |
-          # Remove conflicting jvmargs first
           sed -i '/org.gradle.jvmargs/d' android/gradle.properties
-
-          # Add memory + disable Jetifier (fixes heap crash) + bundle debug
           cat >> android/gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
           org.gradle.daemon=false
           org.gradle.parallel=false
           org.gradle.workers.max=1
           android.enableJetifier=false
-          BUNDLE_IN_DEBUG=true
           EOF
 
-          # Create assets folder
-          mkdir -p android/app/src/main/assets
-
-          # Bundle JavaScript into the APK (required for standalone install)
-          echo "Bundling JavaScript..."
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file node_modules/expo-router/entry.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/ \
-            --reset-cache || \
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/
-
-          echo "Bundle size: $(du -sh android/app/src/main/assets/index.android.bundle)"
+      # Generate a self-signed keystore for release signing
+      - name: Generate signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore android/app/amazonia-release.keystore \
+            -alias amazonia \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass amazonia123 \
+            -keypass amazonia123 \
+            -dname "CN=Amazonia, OU=App, O=Amazonia, L=Kathmandu, ST=Bagmati, C=NP"
+          echo "Keystore created!"
 
       - name: Make Gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build Debug APK
+      # Build RELEASE APK — bundles JS automatically, works without Metro server
+      - name: Build Release APK
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon --max-workers 1
+          ./gradlew assembleRelease --no-daemon --max-workers 1 \
+            -Pandroid.injected.signing.store.file=amazonia-release.keystore \
+            -Pandroid.injected.signing.store.password=amazonia123 \
+            -Pandroid.injected.signing.key.alias=amazonia \
+            -Pandroid.injected.signing.key.password=amazonia123
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g"
           _JAVA_OPTIONS: "-Xmx6g"
 
-      - name: Upload APK
+      - name: Locate APK
+        run: |
+          find android/app/build/outputs -name "*.apk" -type f
+          ls -lh android/app/build/outputs/apk/release/ 2>/dev/null || true
+
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: Amazonia-App
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
       - name: Done
         run: |
           echo "========================================"
-          echo "  APK BUILD COMPLETE!"
-          ls -lh android/app/build/outputs/apk/debug/
+          echo "  RELEASE APK BUILD COMPLETE!"
+          ls -lh android/app/build/outputs/apk/release/
           echo "========================================"
